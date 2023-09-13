@@ -1,9 +1,11 @@
+import io
 import logging
-import os
 
 import requests
 from flask import Flask, jsonify, request
+from PIL import Image
 from werkzeug.exceptions import HTTPException
+from werkzeug.utils import secure_filename
 
 from classifier import Classifier
 from config import Config
@@ -12,9 +14,11 @@ from crawler import Crawler
 logger = logging.getLogger(__name__)
 
 
-def create_app():
+def create_app(classifier=None, crawler_factory=Crawler, http=None):
     app = Flask(__name__)
     app.config.from_object(Config)
+    classifier = classifier or Classifier()
+    http = http or requests.Session()
 
     @app.errorhandler(HTTPException)
     def handle_http_error(error):
@@ -35,31 +39,25 @@ def create_app():
         if not keyword:
             return {"message": "Please provide a keyword argument in query params"}, 400
 
-        image_links = Crawler().get_image_links(keyword)
-        download_images(image_links)
-        return {"predictions": Classifier.classify_image()}
+        predictions = []
+        for link in crawler_factory().get_image_links(keyword):
+            logger.info("Downloading %s", link)
+            response = http.get(link)
+            image = Image.open(io.BytesIO(response.content))
+            predictions.append(classifier.predict(image, link.rsplit("/", 1)[-1]))
+        return {"predictions": predictions}
 
     @app.post("/file")
     def classify_file():
-        image = request.files.get("image")
-        if not image:
+        upload = request.files.get("image")
+        if not upload:
             return {"message": "Please provide image with 'image' key in request"}, 400
 
-        Classifier.save_image(image.filename, image)
-        return {"predictions": Classifier.classify_image()}
+        image = Image.open(io.BytesIO(upload.read()))
+        filename = secure_filename(upload.filename or "") or "upload"
+        return {"predictions": [classifier.predict(image, filename)]}
 
     return app
-
-
-def download_images(image_links):
-    os.makedirs("images", exist_ok=True)
-    for link in image_links:
-        logger.info("Downloading %s", link)
-        response = requests.get(link, allow_redirects=True)
-        filename = link.rsplit("/", 1)[1]
-        with open(f"images/{filename}.jpg", "wb") as f:
-            for data in response.iter_content(1024):
-                f.write(data)
 
 
 if __name__ == "__main__":

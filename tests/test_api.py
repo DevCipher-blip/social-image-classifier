@@ -1,11 +1,53 @@
+import io
+
 import pytest
 
 import app as app_module
+from tests.conftest import LABELS, make_image_bytes
+
+
+class FakeCrawler:
+    links = []
+
+    def get_image_links(self, keyword):
+        return list(self.links)
+
+
+class FakeResponse:
+    def __init__(self, content=b"", status_code=200):
+        self.content = content
+        self.status_code = status_code
+
+
+class FakeHttp:
+    def __init__(self, responses=None):
+        self.responses = responses or {}
+        self.requested = []
+
+    def get(self, url, **kwargs):
+        self.requested.append((url, kwargs))
+        return self.responses[url]
 
 
 @pytest.fixture
-def client():
-    return app_module.create_app().test_client()
+def http():
+    return FakeHttp()
+
+
+@pytest.fixture
+def client(classifier, http):
+    FakeCrawler.links = []
+    return app_module.create_app(
+        classifier=classifier, crawler_factory=FakeCrawler, http=http
+    ).test_client()
+
+
+def upload(client, data, filename="photo.png"):
+    return client.post(
+        "/file",
+        data={"image": (io.BytesIO(data), filename)},
+        content_type="multipart/form-data",
+    )
 
 
 def test_status_reports_running(client):
@@ -26,6 +68,39 @@ def test_file_upload_requires_image_field(client):
     assert "image" in response.get_json()["message"]
 
 
+def test_file_upload_is_classified(client):
+    response = upload(client, make_image_bytes())
+    assert response.status_code == 200
+    [prediction] = response.get_json()["predictions"]
+    assert prediction["filename"] == "photo.png"
+    assert prediction["label"] == LABELS[2]
+
+
+def test_upload_filename_cannot_escape_and_is_not_written(client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    response = upload(client, make_image_bytes(), filename="../../etc/evil.png")
+    assert response.status_code == 200
+    assert response.get_json()["predictions"][0]["filename"] == "etc_evil.png"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_each_request_only_reports_its_own_image(client):
+    upload(client, make_image_bytes(), filename="first.png")
+    response = upload(client, make_image_bytes(), filename="second.png")
+    filenames = [p["filename"] for p in response.get_json()["predictions"]]
+    assert filenames == ["second.png"]
+
+
+def test_keyword_classifies_crawled_media(client, http):
+    link = "https://pbs.twimg.com/media/AbC123?format=jpg&name=small"
+    FakeCrawler.links = [link]
+    http.responses[link] = FakeResponse(make_image_bytes(fmt="JPEG"))
+    response = client.get("/keyword?keyword=nasa")
+    assert response.status_code == 200
+    [prediction] = response.get_json()["predictions"]
+    assert prediction["label"] == LABELS[2]
+
+
 def test_unknown_route_returns_json_404(client):
     response = client.get("/nope")
     assert response.status_code == 404
@@ -39,11 +114,14 @@ def test_wrong_method_returns_json_405(client):
     assert response.is_json
 
 
-def test_unexpected_error_returns_generic_json_500(client, monkeypatch):
-    def explode(*_args, **_kwargs):
-        raise RuntimeError("internal detail that must not leak")
+def test_unexpected_error_returns_generic_json_500(classifier):
+    class BrokenCrawler:
+        def get_image_links(self, keyword):
+            raise RuntimeError("internal detail that must not leak")
 
-    monkeypatch.setattr(app_module, "Crawler", explode)
+    client = app_module.create_app(
+        classifier=classifier, crawler_factory=BrokenCrawler
+    ).test_client()
     response = client.get("/keyword?keyword=nasa")
     assert response.status_code == 500
     assert response.get_json() == {"message": "Something went wrong"}
