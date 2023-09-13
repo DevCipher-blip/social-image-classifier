@@ -8,6 +8,7 @@ from werkzeug.utils import secure_filename
 from classifier import Classifier
 from config import Config
 from crawler import Crawler
+from fetcher import FetchError, UnsafeImageURL, fetch_image_bytes, media_filename
 from imaging import InvalidImage, decode_image
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,17 @@ def create_app(classifier=None, crawler_factory=Crawler, http=None):
         if not keyword:
             return {"message": "Please provide a keyword argument in query params"}, 400
 
-        predictions = []
-        for link in crawler_factory().get_image_links(keyword):
-            logger.info("Downloading %s", link)
-            response = http.get(link)
-            image = decode_image(response.content)
-            predictions.append(classifier.predict(image, link.rsplit("/", 1)[-1]))
-        return {"predictions": predictions}
+        predictions, skipped = [], []
+        links = crawler_factory().get_image_links(keyword)
+        for link in links[: app.config["MAX_IMAGES_PER_KEYWORD"]]:
+            try:
+                image = decode_image(fetch_image_bytes(http, link))
+            except (UnsafeImageURL, FetchError, InvalidImage) as error:
+                logger.warning("Skipping %s: %s", link, error)
+                skipped.append({"url": link, "reason": str(error)})
+                continue
+            predictions.append(classifier.predict(image, media_filename(link)))
+        return {"predictions": predictions, "skipped": skipped}
 
     @app.post("/file")
     def classify_file():

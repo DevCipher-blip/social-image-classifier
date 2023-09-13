@@ -14,9 +14,20 @@ class FakeCrawler:
 
 
 class FakeResponse:
-    def __init__(self, content=b"", status_code=200):
+    def __init__(self, content=b"", status_code=200, headers=None):
         self.content = content
         self.status_code = status_code
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def iter_content(self, chunk_size):
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
 
 
 class FakeHttp:
@@ -26,7 +37,10 @@ class FakeHttp:
 
     def get(self, url, **kwargs):
         self.requested.append((url, kwargs))
-        return self.responses[url]
+        response = self.responses[url]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 @pytest.fixture
@@ -148,3 +162,50 @@ def test_unexpected_error_returns_generic_json_500(classifier):
     response = client.get("/keyword?keyword=nasa")
     assert response.status_code == 500
     assert response.get_json() == {"message": "Something went wrong"}
+
+
+def test_keyword_skips_unsafe_links_without_fetching_them(client, http):
+    good = "https://pbs.twimg.com/media/Good1?format=png"
+    FakeCrawler.links = [
+        "http://pbs.twimg.com/media/Plain",
+        "https://169.254.169.254/media/Meta",
+        "https://pbs.twimg.com@evil.example/media/X",
+        good,
+    ]
+    http.responses[good] = FakeResponse(make_image_bytes())
+    body = client.get("/keyword?keyword=nasa").get_json()
+    assert [p["filename"] for p in body["predictions"]] == ["Good1"]
+    assert len(body["skipped"]) == 3
+    assert [url for url, _ in http.requested] == [good]
+
+
+def test_keyword_fetches_use_timeout_and_no_redirects(client, http):
+    link = "https://pbs.twimg.com/media/Abc"
+    FakeCrawler.links = [link]
+    http.responses[link] = FakeResponse(make_image_bytes())
+    client.get("/keyword?keyword=nasa")
+    _, kwargs = http.requested[0]
+    assert kwargs["timeout"] == (5, 15)
+    assert kwargs["allow_redirects"] is False
+
+
+def test_keyword_reports_failed_downloads_and_keeps_going(client, http):
+    import requests
+
+    slow, broken, good = (f"https://pbs.twimg.com/media/{name}" for name in ("Slow", "Gone", "Ok"))
+    FakeCrawler.links = [slow, broken, good]
+    http.responses[slow] = requests.Timeout("read timed out")
+    http.responses[broken] = FakeResponse(status_code=404)
+    http.responses[good] = FakeResponse(make_image_bytes())
+    body = client.get("/keyword?keyword=nasa").get_json()
+    assert [p["filename"] for p in body["predictions"]] == ["Ok"]
+    assert [s["url"] for s in body["skipped"]] == [slow, broken]
+
+
+def test_keyword_caps_number_of_images(client, http):
+    links = [f"https://pbs.twimg.com/media/Img{i}" for i in range(15)]
+    FakeCrawler.links = links
+    for link in links:
+        http.responses[link] = FakeResponse(make_image_bytes())
+    body = client.get("/keyword?keyword=nasa").get_json()
+    assert len(body["predictions"]) == 10
