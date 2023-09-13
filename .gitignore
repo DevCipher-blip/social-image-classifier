@@ -1,0 +1,38 @@
+# Local environments
+.venv/
+venv/
+env/
+project_venv/
+node_modules/
+
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Logs and scratch
+*.log
+logs/
+tmp/
+
+# Downloaded or uploaded images are never committed
+images/
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
