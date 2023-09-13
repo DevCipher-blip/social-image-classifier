@@ -1,15 +1,14 @@
-import io
 import logging
 
 import requests
 from flask import Flask, jsonify, request
-from PIL import Image
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
 from classifier import Classifier
 from config import Config
 from crawler import Crawler
+from imaging import InvalidImage, decode_image
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +22,10 @@ def create_app(classifier=None, crawler_factory=Crawler, http=None):
     @app.errorhandler(HTTPException)
     def handle_http_error(error):
         return jsonify(message=error.description), error.code
+
+    @app.errorhandler(InvalidImage)
+    def handle_invalid_image(error):
+        return jsonify(message=str(error)), error.status_code
 
     @app.errorhandler(Exception)
     def handle_unexpected_error(error):
@@ -43,7 +46,7 @@ def create_app(classifier=None, crawler_factory=Crawler, http=None):
         for link in crawler_factory().get_image_links(keyword):
             logger.info("Downloading %s", link)
             response = http.get(link)
-            image = Image.open(io.BytesIO(response.content))
+            image = decode_image(response.content)
             predictions.append(classifier.predict(image, link.rsplit("/", 1)[-1]))
         return {"predictions": predictions}
 
@@ -53,7 +56,7 @@ def create_app(classifier=None, crawler_factory=Crawler, http=None):
         if not upload:
             return {"message": "Please provide image with 'image' key in request"}, 400
 
-        image = Image.open(io.BytesIO(upload.read()))
+        image = decode_image(upload.read())
         filename = secure_filename(upload.filename or "") or "upload"
         return {"predictions": [classifier.predict(image, filename)]}
 

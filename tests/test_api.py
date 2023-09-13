@@ -91,6 +91,29 @@ def test_each_request_only_reports_its_own_image(client):
     assert filenames == ["second.png"]
 
 
+def test_garbage_upload_is_a_json_400(client):
+    response = upload(client, b"<?php echo 1; ?>", filename="shell.png")
+    assert response.status_code == 400
+    assert response.get_json() == {"message": "The file is not a readable image"}
+
+
+def test_oversized_body_is_a_json_413(classifier):
+    flask_app = app_module.create_app(classifier=classifier)
+    flask_app.config["MAX_CONTENT_LENGTH"] = 1024
+    response = upload(flask_app.test_client(), b"x" * 4096)
+    assert response.status_code == 413
+    assert response.is_json
+
+
+def test_pixel_bomb_upload_is_a_json_413(client, monkeypatch):
+    import imaging
+
+    monkeypatch.setattr(imaging, "MAX_IMAGE_PIXELS", 100)
+    response = upload(client, make_image_bytes())
+    assert response.status_code == 413
+    assert "pixels" in response.get_json()["message"]
+
+
 def test_keyword_classifies_crawled_media(client, http):
     link = "https://pbs.twimg.com/media/AbC123?format=jpg&name=small"
     FakeCrawler.links = [link]
