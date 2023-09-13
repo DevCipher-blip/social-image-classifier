@@ -1,78 +1,66 @@
-import json
+import logging
 import os
 
 import requests
-from flask import Flask, request
-from flask_api import status
+from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
 
-from flask_restful import Api, Resource
-from custom_flask_api import CustomFlaskApi
-from crawler import Crawler
 from classifier import Classifier
-import tqdm
+from config import Config
+from crawler import Crawler
+
+logger = logging.getLogger(__name__)
 
 
-flask_app = Flask(__name__)
-api = CustomFlaskApi(flask_app)
+def create_app():
+    app = Flask(__name__)
+    app.config.from_object(Config)
 
+    @app.errorhandler(HTTPException)
+    def handle_http_error(error):
+        return jsonify(message=error.description), error.code
 
-class StatusAPIView(Resource):
-    def get(self):
-        message = "API is up and running"
-        return {"status": message}, status.HTTP_200_OK
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        logger.exception("Unhandled error while serving %s", request.path)
+        return jsonify(message="Something went wrong"), 500
 
+    @app.get("/status")
+    def status():
+        return {"status": "API is up and running"}
 
-class KeywordAPIView(Resource):
-    def get(self):
-        keyword = request.args.get("keyword", None)
-
+    @app.get("/keyword")
+    def classify_keyword():
+        keyword = request.args.get("keyword")
         if not keyword:
-            return {
-                "message": "Please provide a keyword argument in query params"
-            }, status.HTTP_400_BAD_REQUEST
+            return {"message": "Please provide a keyword argument in query params"}, 400
 
-        crawler = Crawler()
-        image_links = crawler.get_image_links(keyword)
-        self.download_images(image_links)
+        image_links = Crawler().get_image_links(keyword)
+        download_images(image_links)
+        return {"predictions": Classifier.classify_image()}
 
-        predictions = Classifier.classify_image()
-        return {"predictions": predictions}, status.HTTP_200_OK
-
-    def download_images(self, image_links):
-        for link in image_links:
-            print("Downloading {}".format(link))
-            response = requests.get(link, allow_redirects=True)
-
-            if not os.path.exists("images"):
-                os.mkdir("images")
-
-            if link.find("/"):
-                filename = link.rsplit("/", 1)[1]
-            block_size = 1024  # One 1kb
-            with open(f"images/{filename}.jpg", "wb") as f:
-                for data in response.iter_content(block_size):
-                    f.write(data)
-
-
-class FileAPIView(Resource):
-    def post(self):
-        request_data = request.files
-        image = request_data.get("image", None)
-
+    @app.post("/file")
+    def classify_file():
+        image = request.files.get("image")
         if not image:
-            return {
-                "message": "Please provide image with 'image' key in request"
-            }, status.HTTP_400_BAD_REQUEST
+            return {"message": "Please provide image with 'image' key in request"}, 400
 
         Classifier.save_image(image.filename, image)
-        predictions = Classifier.classify_image()
+        return {"predictions": Classifier.classify_image()}
 
-        return {"predictions": predictions}, status.HTTP_200_OK
+    return app
 
 
-api.add_resource(StatusAPIView, "/status")
-api.add_resource(KeywordAPIView, "/keyword")
-api.add_resource(FileAPIView, "/file")
+def download_images(image_links):
+    os.makedirs("images", exist_ok=True)
+    for link in image_links:
+        logger.info("Downloading %s", link)
+        response = requests.get(link, allow_redirects=True)
+        filename = link.rsplit("/", 1)[1]
+        with open(f"images/{filename}.jpg", "wb") as f:
+            for data in response.iter_content(1024):
+                f.write(data)
+
 
 if __name__ == "__main__":
-    flask_app.run()
+    create_app().run()

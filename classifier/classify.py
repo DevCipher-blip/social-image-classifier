@@ -1,32 +1,31 @@
 import os
 
-import cv2
-import numpy as np
 import torch
-from torchvision import models
+from PIL import Image, UnidentifiedImageError
+from torchvision import models, transforms
 
-from .model_config import *
+from .model_config import DEVICE, IMAGE_SIZE, IN_LABELS, MEAN, STD
+
+PREPROCESS = transforms.Compose(
+    [
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD),
+    ]
+)
 
 
 class Classifier:
     @classmethod
     def predict_label(cls, image, filename):
-        model = models.vgg19(pretrained=True).to(DEVICE)
+        model = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1).to(DEVICE)
         model.eval()
 
-        image = cls.preprocess_image(image)
-        image = torch.from_numpy(image)
-        image = image.to(DEVICE)
-
-        print("[INFO] loading labels...")
-        image_labels = dict(enumerate(open(IN_LABELS)))
-        print("[INFO] classifying image")
-        logits = model(image)
-        probabilities = torch.nn.Softmax(dim=-1)(logits)
-        (label, prob) = (
-            image_labels[probabilities.argmax().item()],
-            probabilities.max().item(),
-        )
+        batch = PREPROCESS(image.convert("RGB")).unsqueeze(0).to(DEVICE)
+        with open(IN_LABELS) as labels_file:
+            image_labels = dict(enumerate(labels_file))
+        probabilities = torch.softmax(model(batch), dim=-1)
+        label, prob = image_labels[probabilities.argmax().item()], probabilities.max().item()
 
         return {"filename": filename, "label": label.strip(), "probability": prob * 100}
 
@@ -35,24 +34,13 @@ class Classifier:
         results = []
         folder = "images"
         for filename in os.listdir(folder):
-            img = cv2.imread(os.path.join(folder, filename))
-            if img is not None:
-                prediction = cls.predict_label(img, filename)
-                results.append(prediction)
+            try:
+                image = Image.open(os.path.join(folder, filename))
+            except (UnidentifiedImageError, OSError):
+                continue
+            results.append(cls.predict_label(image, filename))
 
         return results
-
-    @classmethod
-    def preprocess_image(cls, image):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (IMAGE_SIZE, IMAGE_SIZE))
-        image = image.astype("float32") / 255.0
-        image -= MEAN
-        image /= STD
-        image = np.transpose(image, (2, 0, 1))
-        image = np.expand_dims(image, 0)
-
-        return image
 
     @classmethod
     def save_image(cls, file_name, image):
