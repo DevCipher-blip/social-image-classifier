@@ -7,7 +7,7 @@ from werkzeug.utils import secure_filename
 
 from classifier import Classifier
 from config import Config
-from crawler import Crawler
+from crawler import Crawler, CrawlerUnavailable, InvalidHandle
 from fetcher import FetchError, UnsafeImageURL, fetch_image_bytes, media_filename
 from imaging import InvalidImage, decode_image
 
@@ -43,8 +43,14 @@ def create_app(classifier=None, crawler_factory=Crawler, http=None):
         if not keyword:
             return {"message": "Please provide a keyword argument in query params"}, 400
 
+        try:
+            links = crawler_factory().get_image_links(keyword)
+        except InvalidHandle as error:
+            return {"message": str(error)}, 400
+        except CrawlerUnavailable as error:
+            return {"message": str(error)}, 503
+
         predictions, skipped = [], []
-        links = crawler_factory().get_image_links(keyword)
         for link in links[: app.config["MAX_IMAGES_PER_KEYWORD"]]:
             try:
                 image = decode_image(fetch_image_bytes(http, link))

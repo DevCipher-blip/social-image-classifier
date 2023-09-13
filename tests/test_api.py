@@ -3,6 +3,7 @@ import io
 import pytest
 
 import app as app_module
+from crawler import profile_url
 from tests.conftest import LABELS, make_image_bytes
 
 
@@ -10,6 +11,7 @@ class FakeCrawler:
     links = []
 
     def get_image_links(self, keyword):
+        profile_url(keyword)
         return list(self.links)
 
 
@@ -209,3 +211,22 @@ def test_keyword_caps_number_of_images(client, http):
         http.responses[link] = FakeResponse(make_image_bytes())
     body = client.get("/keyword?keyword=nasa").get_json()
     assert len(body["predictions"]) == 10
+
+
+def test_keyword_must_look_like_a_handle(client):
+    response = client.get("/keyword", query_string={"keyword": "../i/flow"})
+    assert response.status_code == 400
+    assert "keyword" in response.get_json()["message"]
+
+
+def test_keyword_without_selenium_is_a_json_503(classifier):
+    from crawler import CrawlerUnavailable
+
+    class NoSelenium:
+        def get_image_links(self, keyword):
+            raise CrawlerUnavailable("The crawler needs Selenium")
+
+    flask_app = app_module.create_app(classifier=classifier, crawler_factory=NoSelenium)
+    response = flask_app.test_client().get("/keyword?keyword=nasa")
+    assert response.status_code == 503
+    assert response.get_json() == {"message": "The crawler needs Selenium"}

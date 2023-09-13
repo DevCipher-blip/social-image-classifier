@@ -1,0 +1,3 @@
+# Needed only for GET /keyword; also needs Chrome or Chromium on the machine.
+-r requirements.txt
+selenium==4.52.0
