@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+project_venv
+images
+tests
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+.env
+.env.*
+.idea
+.vscode
+.DS_Store
